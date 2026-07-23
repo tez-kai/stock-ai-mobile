@@ -57,4 +57,6 @@ except Exception as exc:
 
 os.environ["STOCK_AI_DATA_ROOT"] = data_root
 
-from stock_ai.app import dashboard  # noqa: E402,F401
+from stock_ai.app import dashboard  # noqa: E402
+
+dashboard._render_dashboard()
