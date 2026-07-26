@@ -12,6 +12,7 @@ import streamlit as st
 from stock_ai.app.chart_loader import prepare_chart_frame
 from stock_ai.app.data_loader import load_dashboard_snapshot
 from stock_ai.app.news_loader import filter_news_for_ticker
+from stock_ai.app.intraday_paper_view import render_intraday_paper_view
 from stock_ai.app.validation_view import (
     HORIZON_LABELS,
     build_candidate_evidence,
@@ -257,7 +258,12 @@ def _render_dashboard() -> None:
     )
     if view_mode == "シンプル":
         _render_simple_validation(snapshot)
+        st.divider()
+        render_intraday_paper_view(PROCESSED_DIR)
         return
+
+    with st.expander("50万円・5分後仮想売買", expanded=True):
+        render_intraday_paper_view(PROCESSED_DIR)
 
     with st.expander("フォワードテスト（毎日の仮想売買）", expanded=True):
         _render_forward_test()
