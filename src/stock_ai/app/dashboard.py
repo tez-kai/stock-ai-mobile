@@ -12,6 +12,13 @@ import streamlit as st
 from stock_ai.app.chart_loader import prepare_chart_frame
 from stock_ai.app.data_loader import load_dashboard_snapshot
 from stock_ai.app.news_loader import filter_news_for_ticker
+from stock_ai.app.validation_view import (
+    HORIZON_LABELS,
+    build_candidate_evidence,
+    find_reproduced_conditions,
+    summarize_conditions,
+    summarize_historical_conditions,
+)
 
 
 TITLE = "stock-ai 投資分析ダッシュボード"
@@ -89,9 +96,9 @@ def _build_chart_figure(windowed_frame: pd.DataFrame) -> go.Figure:
 
 
 def _refresh_analysis_data() -> None:
+    """クラウドに保存された最新の分析結果を再取得する。"""
     st.cache_data.clear()
     st.cache_resource.clear()
-    st.success("GitHub上の最新分析データを再取得します。")
     st.rerun()
 
 
@@ -131,6 +138,99 @@ def _render_forward_test() -> None:
     st.caption("実際の発生日以降だけを記録する仮想売買です。投資助言や将来の利益保証ではありません。")
 
 
+def _render_simple_validation(snapshot) -> None:
+    """根拠、結果、信頼度だけに絞った初期画面を表示する。"""
+    st.subheader("期待値の検証")
+    st.caption(
+        "現在のスコアを売買判断としてではなく、過去の同じ根拠がその後どうなったかで検証します。"
+    )
+
+    horizon = st.selectbox(
+        "検証期間",
+        options=[1, 5, 20],
+        format_func=lambda value: HORIZON_LABELS[value],
+        index=1,
+    )
+    historical = summarize_historical_conditions(
+        snapshot.backtest_events,
+        horizon=horizon,
+    )
+    forward = summarize_conditions(snapshot.validation_events, horizon=horizon)
+    historical_evaluated = sum(
+        pd.notna(pd.to_numeric(event.get(f"return_{horizon}d"), errors="coerce"))
+        for event in snapshot.backtest_events
+    )
+    forward_evaluated = sum(
+        pd.notna(pd.to_numeric(event.get(f"return_{horizon}d"), errors="coerce"))
+        for event in snapshot.validation_events
+    )
+    top = historical.dropna(subset=["平均リターン(%)"]).head(1)
+
+    metrics = st.columns(4)
+    metrics[0].metric("過去検証", historical_evaluated)
+    metrics[1].metric("実運用の評価済み", forward_evaluated)
+    metrics[2].metric("現在の候補", len(snapshot.rankings))
+    metrics[3].metric(
+        "過去の最高期待値",
+        top.iloc[0]["根拠条件"] if not top.empty else "データ蓄積中",
+        (
+            f"平均 {top.iloc[0]['平均リターン(%)']:.2f}%"
+            if not top.empty
+            else None
+        ),
+    )
+
+    tabs = st.tabs(["過去検証", "実運用検証", "両方で再現"])
+    with tabs[0]:
+        st.caption(
+            "過去1年の株価を使い、シグナル翌営業日の始値からの値動きを検証。"
+            " 往復取引コスト控除後です。"
+        )
+        if historical.empty:
+            st.info("過去バックテスト結果がありません。分析データを更新してください。")
+        else:
+            st.dataframe(historical.head(15), width="stretch", hide_index=True)
+    with tabs[1]:
+        if forward_evaluated < 10:
+            st.info(
+                "実運用データは蓄積中です。10件で傾向確認、30件以上で比較検証を始めます。"
+            )
+        if forward.empty:
+            st.caption("翌営業日以降に評価結果が順次入ります。")
+        else:
+            st.dataframe(forward.head(15), width="stretch", hide_index=True)
+    with tabs[2]:
+        reproduced = find_reproduced_conditions(historical, forward)
+        if reproduced.empty:
+            st.info(
+                "過去検証と実運用検証の両方でプラスを確認できるまでデータを蓄積します。"
+            )
+        else:
+            st.dataframe(reproduced.head(10), width="stretch", hide_index=True)
+
+    st.markdown("#### 現在の候補と、過去検証による根拠")
+    candidates = build_candidate_evidence(snapshot.rankings, historical)
+    if candidates.empty:
+        st.info("現在表示できる候補はありません。")
+    else:
+        st.dataframe(candidates.head(15), width="stretch", hide_index=True)
+
+    with st.expander("数値の読み方"):
+        st.markdown(
+            """
+- **今回の根拠**：現在のシグナルが成立した理由
+- **勝率**：同じ根拠が成立した後、選択期間でプラスになった割合
+- **平均リターン**：同じ根拠の選択期間後リターンの平均
+- **過去検証**：保存済み株価で、同じテクニカル条件の過去成績を確認
+- **実運用検証**：実装後に実際に発生したシグナルだけを追跡
+- **両方で再現**：過去と実運用の双方で平均リターンがプラスだった条件
+- **信頼度**：評価済み10件未満は「参考」、10件以上は「蓄積中」、30件以上は「検証可能」
+
+勝率だけでなく、平均リターンと評価済み件数を必ず一緒に確認します。
+"""
+        )
+
+
 def _render_dashboard() -> None:
     st.set_page_config(page_title=TITLE, layout="wide")
     st.title(TITLE)
@@ -149,6 +249,15 @@ def _render_dashboard() -> None:
     col2.metric("ニュース件数", snapshot.news_count)
     col3.metric("ニュース関連銘柄数", len(snapshot.related_tickers))
     col4.metric("分析対象銘柄数", len(snapshot.analysis_tickers))
+
+    view_mode = st.segmented_control(
+        "表示",
+        options=["シンプル", "詳細分析"],
+        default="シンプル",
+    )
+    if view_mode == "シンプル":
+        _render_simple_validation(snapshot)
+        return
 
     with st.expander("フォワードテスト（毎日の仮想売買）", expanded=True):
         _render_forward_test()

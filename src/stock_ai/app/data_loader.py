@@ -28,6 +28,7 @@ class DashboardSnapshot:
     backtest_exit_strategy_stability: list[dict[str, Any]] = field(default_factory=list)
     portfolio_backtest: list[dict[str, Any]] = field(default_factory=list)
     portfolio_backtest_summary: dict[str, Any] = field(default_factory=dict)
+    validation_events: list[dict[str, Any]] = field(default_factory=list)
     error_message: str = ""
 
 
@@ -166,9 +167,21 @@ def load_dashboard_snapshot(processed_dir: Path | str = "data/processed") -> Das
     if portfolio_summary_path.exists():
         with portfolio_summary_path.open("r", encoding="utf-8") as file:
             snapshot.portfolio_backtest_summary = json.load(file)
+    validation_events_path = root_dir / "validation_events.csv"
+    if validation_events_path.exists():
+        with validation_events_path.open("r", encoding="utf-8-sig", newline="") as file:
+            snapshot.validation_events = list(csv.DictReader(file))
 
     latest_timestamp = 0.0
-    for file_path in (summary_path, ranking_json_path, ranking_csv_path, history_path, backtest_summary_path, backtest_events_path):
+    for file_path in (
+        summary_path,
+        ranking_json_path,
+        ranking_csv_path,
+        history_path,
+        backtest_summary_path,
+        backtest_events_path,
+        validation_events_path,
+    ):
         if file_path.exists():
             latest_timestamp = max(latest_timestamp, file_path.stat().st_mtime)
 
