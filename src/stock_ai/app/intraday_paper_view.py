@@ -160,6 +160,77 @@ def execution_quality(state: dict[str, object]) -> dict[str, float]:
     }
 
 
+def build_position_summary(state: dict[str, object]) -> pd.DataFrame:
+    """Return open positions using only fields useful to a human reviewer."""
+    rows: list[dict[str, object]] = []
+    for item in state.get("positions", []):
+        shares = int(_number(item.get("shares")))
+        entry_price = _number(item.get("entry_price"))
+        latest_price = _number(item.get("latest_price"), entry_price)
+        entry_cost = _number(
+            item.get("entry_amount"),
+            shares * entry_price + _number(item.get("entry_fee")),
+        )
+        market_value = shares * latest_price
+        profit = market_value - entry_cost
+        rows.append(
+            {
+                "銘柄": f"{item.get('company', item.get('ticker', ''))} ({item.get('ticker', '')})",
+                "買付": _format_time(item.get("entry_at")),
+                "買付金額": round(entry_cost),
+                "現在評価額": round(market_value),
+                "含み損益": round(profit),
+                "損益率(%)": round(profit / entry_cost * 100, 2) if entry_cost else 0,
+                "買った根拠": _reason_text(item.get("signal_reason")),
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def build_activity_feed(state: dict[str, object]) -> pd.DataFrame:
+    """Translate internal order events into a compact chronological activity log."""
+    status_labels = {
+        "executed": "約定済み",
+        "pending": "5分後の確認待ち",
+        "pending_entry": "買付待ち",
+        "pending_exit": "売却待ち",
+        "skipped": "見送り",
+        "cancelled": "取消",
+        "open": "保有中",
+        "closed": "決済済み",
+    }
+    rows: list[dict[str, object]] = []
+    for event in state.get("events", []):
+        side = "買付" if event.get("side") == "buy" else "売却"
+        signal_at = event.get("signal_at")
+        executed_at = event.get("executed_at")
+        status = str(event.get("status", ""))
+        price = _number(event.get("execution_price"), -1)
+        rows.append(
+            {
+                "日時": _format_time(executed_at or signal_at),
+                "行動": side,
+                "銘柄": f"{event.get('company', event.get('ticker', ''))} ({event.get('ticker', '')})",
+                "状態": status_labels.get(status, "確認中" if status else "—"),
+                "約定価格": round(price, 2) if price >= 0 else None,
+                "シグナル→実行": (
+                    f"{_number(event.get('execution_delay_minutes')):.0f}分"
+                    if executed_at else "—"
+                ),
+                "判断根拠": _reason_text(event.get("signal_reason")),
+                "_time": pd.to_datetime(executed_at or signal_at, errors="coerce", utc=True),
+            }
+        )
+    if not rows:
+        return pd.DataFrame()
+    return (
+        pd.DataFrame(rows)
+        .sort_values("_time", ascending=False)
+        .drop(columns="_time")
+        .reset_index(drop=True)
+    )
+
+
 def build_feedback_issue_url(
     target: str, rating: str, categories: list[str], note: str
 ) -> str:
@@ -220,48 +291,31 @@ def _render_equity_chart(curve: pd.DataFrame) -> None:
 
 
 def _render_positions(state: dict[str, object]) -> None:
-    positions = state.get("positions", [])
+    positions = build_position_summary(state)
     pending = state.get("pending_orders", [])
-    if positions:
-        rows = []
-        for item in positions:
-            shares = int(_number(item.get("shares")))
-            entry_price = _number(item.get("entry_price"))
-            latest_price = _number(item.get("latest_price"), entry_price)
-            entry_cost = _number(
-                item.get("entry_amount"),
-                shares * entry_price + _number(item.get("entry_fee")),
-            )
-            market_value = shares * latest_price
-            rows.append(
-                {
-                    "企業名": item.get("company", item.get("ticker", "")),
-                    "ticker": item.get("ticker", ""),
-                    "買付日時": _format_time(item.get("entry_at")),
-                    "買値": entry_price,
-                    "現在値": latest_price,
-                    "株数": shares,
-                    "買付総額": round(entry_cost),
-                    "現在評価額": round(market_value),
-                    "含み損益": round(market_value - entry_cost),
-                    "含み損益率(%)": round((market_value / entry_cost - 1) * 100, 2)
-                    if entry_cost else 0,
-                    "根拠": _reason_text(item.get("signal_reason")),
-                }
-            )
-        st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True)
+    if not positions.empty:
+        st.dataframe(
+            positions,
+            width="stretch",
+            hide_index=True,
+            column_config={
+                "買付金額": st.column_config.NumberColumn(format="localized"),
+                "現在評価額": st.column_config.NumberColumn(format="localized"),
+                "含み損益": st.column_config.NumberColumn(format="localized"),
+                "損益率(%)": st.column_config.NumberColumn(format="%.2f"),
+            },
+        )
     else:
         st.caption("現在の保有銘柄はありません。")
     if pending:
-        st.markdown("#### 約定待ち")
+        st.markdown("#### 次に実行する予定")
         pending_rows = [
             {
-                "売買": "買付" if item.get("side") == "buy" else "売却",
-                "企業名": item.get("company", item.get("ticker", "")),
-                "ticker": item.get("ticker", ""),
-                "シグナル時刻": _format_time(item.get("signal_at")),
-                "約定目標": _format_time(item.get("execute_after")),
-                "状態": item.get("status", ""),
+                "予定": "買付" if item.get("side") == "buy" else "売却",
+                "銘柄": f"{item.get('company', item.get('ticker', ''))} ({item.get('ticker', '')})",
+                "シグナル": _format_time(item.get("signal_at")),
+                "実行予定": _format_time(item.get("execute_after")),
+                "判断根拠": _reason_text(item.get("signal_reason")),
             }
             for item in pending
         ]
@@ -316,7 +370,7 @@ def _render_feedback(state: dict[str, object]) -> None:
 
 def render_intraday_paper_view(processed_dir: Path) -> None:
     state_path = processed_dir / "intraday_paper_portfolio.json"
-    st.subheader("50万円の検証運用")
+    st.subheader("50万円の検証結果")
     st.caption(
         "いつ、何を、いくらで買い、売り、その結果50万円がどう変わったかを記録します。"
         "実際の発注や利益保証ではありません。"
@@ -343,36 +397,51 @@ def render_intraday_paper_view(processed_dir: Path) -> None:
     unrealized = market_value - open_cost
     total_assets = _number(latest.get("total_assets"), INITIAL_CAPITAL)
 
-    first_row = st.columns(4)
-    first_row[0].metric("現在の総資産", f"{total_assets:,.0f}円", f"{total_assets - INITIAL_CAPITAL:+,.0f}円")
-    first_row[1].metric("現金", f"{_number(latest.get('cash'), INITIAL_CAPITAL):,.0f}円")
-    first_row[2].metric("保有株評価額", f"{market_value:,.0f}円")
-    first_row[3].metric("開始から", f"{_number(latest.get('return_percent')):+.2f}%")
-    second_row = st.columns(4)
-    second_row[0].metric("確定損益", f"{realized:+,.0f}円")
-    second_row[1].metric("含み損益", f"{unrealized:+,.0f}円")
-    second_row[2].metric("最大下落", f"{_number(latest.get('drawdown_percent')):.2f}%")
-    second_row[3].metric("決済件数", len(closed))
+    result = total_assets - INITIAL_CAPITAL
+    return_percent = result / INITIAL_CAPITAL * 100
+    headline = st.columns([1.4, 1, 1])
+    headline[0].metric("現在の資産", f"{total_assets:,.0f}円", f"開始から {result:+,.0f}円")
+    headline[1].metric("運用成績", f"{return_percent:+.2f}%")
+    headline[2].metric("現在の状態", "保有中" if state.get("positions") else "現金待機")
+    detail = st.columns(4)
+    detail[0].metric("現金", f"{_number(latest.get('cash'), INITIAL_CAPITAL):,.0f}円")
+    detail[1].metric("保有株", f"{market_value:,.0f}円")
+    detail[2].metric("確定 / 含み", f"{realized:+,.0f} / {unrealized:+,.0f}円")
+    detail[3].metric("最大下落", f"{_number(latest.get('drawdown_percent')):.2f}%")
 
-    if not curve.empty:
-        _render_equity_chart(curve)
-
-    tabs = st.tabs(["資産の流れ", "保有・注文", "売買履歴", "検証改善", "フィードバック"])
+    tabs = st.tabs(["いまの状態", "今日の動き", "売買結果", "原因分析", "フィードバック"])
     with tabs[0]:
-        ledger = build_transaction_ledger(state)
-        st.markdown("#### 50万円がどう動いたか")
-        if ledger.empty:
-            st.caption("売買が始まると、買付・売却・現金残高を時系列で表示します。")
-        else:
-            st.dataframe(ledger, width="stretch", hide_index=True)
-    with tabs[1]:
+        st.markdown("#### 現在保有している銘柄")
         _render_positions(state)
+        if not curve.empty:
+            st.markdown("#### 50万円の推移")
+            _render_equity_chart(curve)
+    with tabs[1]:
+        activity = build_activity_feed(state)
+        st.caption("シグナルを出した時刻、実際に売買した時刻、判断根拠を新しい順に表示します。")
+        if activity.empty:
+            st.caption("まだ売買の動きはありません。")
+        else:
+            st.dataframe(activity.head(20), width="stretch", hide_index=True)
     with tabs[2]:
         history = build_trade_history(state)
         if history.empty:
             st.caption("決済後に、買値・売値・金額・損益を1行で表示します。")
         else:
-            st.dataframe(history, width="stretch", hide_index=True)
+            summary_columns = [
+                "企業名", "ticker", "買付日時", "買付総額", "売却日時",
+                "売却総額", "損益", "収益率(%)", "保有時間",
+            ]
+            st.dataframe(history[summary_columns], width="stretch", hide_index=True)
+            with st.expander("売買の根拠を詳しく見る"):
+                st.dataframe(
+                    history[["企業名", "買付根拠", "売却根拠"]],
+                    width="stretch",
+                    hide_index=True,
+                )
+            with st.expander("現金残高の全履歴を見る"):
+                ledger = build_transaction_ledger(state)
+                st.dataframe(ledger, width="stretch", hide_index=True)
     with tabs[3]:
         gains = [max(_number(item.get("net_pnl")), 0) for item in closed]
         losses = [abs(min(_number(item.get("net_pnl")), 0)) for item in closed]
@@ -380,10 +449,10 @@ def render_intraday_paper_view(processed_dir: Path) -> None:
         profit_factor = sum(gains) / sum(losses) if sum(losses) else 0
         quality = execution_quality(state)
         metrics = st.columns(4)
-        metrics[0].metric("勝率", f"{win_rate:.1f}%")
-        metrics[1].metric("利益係数", f"{profit_factor:.2f}")
-        metrics[2].metric("約定遅延の中央値", f"{quality['median']:.0f}分")
-        metrics[3].metric("10分以内の約定", f"{quality['within_10']:.1f}%")
+        metrics[0].metric("決済件数", len(closed))
+        metrics[1].metric("勝率", f"{win_rate:.1f}%")
+        metrics[2].metric("利益係数", f"{profit_factor:.2f}")
+        metrics[3].metric("10分以内に実行", f"{quality['within_10']:.1f}%")
         if quality["median"] > 10 or quality["over_60"]:
             st.warning(
                 f"過去の約定には60分超の遅延が{int(quality['over_60'])}件あります。"
@@ -396,7 +465,7 @@ def render_intraday_paper_view(processed_dir: Path) -> None:
         if not causes.empty:
             st.markdown("#### 根拠別の結果")
             st.dataframe(causes, width="stretch", hide_index=True)
-        st.markdown("#### 次の改善候補")
+        st.markdown("#### この結果から次に直すこと")
         st.write("- TOPIXを基準にした超過リターンを追加し、地合いの上昇と実力を分離する")
         st.write("- 30件未満の根拠はスコアを自動変更せず、十分な件数まで保留する")
         st.write("- フィードバックと実績が一致した条件だけを、次の検証候補にする")

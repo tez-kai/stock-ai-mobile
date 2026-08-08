@@ -3,7 +3,9 @@ from __future__ import annotations
 from urllib.parse import parse_qs, urlparse
 
 from stock_ai.app.intraday_paper_view import (
+    build_activity_feed,
     build_feedback_issue_url,
+    build_position_summary,
     build_trade_history,
     build_transaction_ledger,
     execution_quality,
@@ -94,3 +96,42 @@ def test_feedback_url_contains_user_observation() -> None:
     assert "悪かった" in query["title"][0]
     assert "買うのが遅い" in query["body"][0]
     assert "価格を確認したい" in query["body"][0]
+
+
+def test_position_summary_shows_money_and_reason_without_internal_ids() -> None:
+    state = _sample_state()
+    state["positions"][0]["latest_price"] = 3_100
+
+    positions = build_position_summary(state)
+
+    assert positions.iloc[0]["銘柄"] == "三菱重工業 (7011.T)"
+    assert positions.iloc[0]["買付金額"] == 60_100
+    assert positions.iloc[0]["現在評価額"] == 62_000
+    assert positions.iloc[0]["含み損益"] == 1_900
+    assert "order_id" not in positions.columns
+
+
+def test_activity_feed_humanizes_internal_event_fields() -> None:
+    state = _sample_state()
+    state["events"] = [
+        {
+            "order_id": "buy:6501.T:internal",
+            "side": "buy",
+            "ticker": "6501.T",
+            "company": "日立製作所",
+            "signal_at": "2026-08-01T00:00:00+00:00",
+            "executed_at": "2026-08-01T00:06:00+00:00",
+            "execution_price": 4_000,
+            "execution_delay_minutes": 6,
+            "status": "executed",
+            "signal_reason": ["出来高2倍以上"],
+        }
+    ]
+
+    activity = build_activity_feed(state)
+
+    assert activity.iloc[0]["行動"] == "買付"
+    assert activity.iloc[0]["状態"] == "約定済み"
+    assert activity.iloc[0]["シグナル→実行"] == "6分"
+    assert "order_id" not in activity.columns
+    assert "execute_after" not in activity.columns
