@@ -29,6 +29,8 @@ class DashboardSnapshot:
     portfolio_backtest: list[dict[str, Any]] = field(default_factory=list)
     portfolio_backtest_summary: dict[str, Any] = field(default_factory=dict)
     validation_events: list[dict[str, Any]] = field(default_factory=list)
+    strategy_performance: list[dict[str, Any]] = field(default_factory=list)
+    strategy_status_assessments: list[dict[str, Any]] = field(default_factory=list)
     error_message: str = ""
 
 
@@ -171,6 +173,14 @@ def load_dashboard_snapshot(processed_dir: Path | str = "data/processed") -> Das
     if validation_events_path.exists():
         with validation_events_path.open("r", encoding="utf-8-sig", newline="") as file:
             snapshot.validation_events = list(csv.DictReader(file))
+    strategy_performance_path = root_dir / "strategy_performance.csv"
+    if strategy_performance_path.exists():
+        with strategy_performance_path.open("r", encoding="utf-8-sig", newline="") as file:
+            snapshot.strategy_performance = list(csv.DictReader(file))
+    strategy_status_path = root_dir / "strategy_status_assessment.csv"
+    if strategy_status_path.exists():
+        with strategy_status_path.open("r", encoding="utf-8-sig", newline="") as file:
+            snapshot.strategy_status_assessments = list(csv.DictReader(file))
 
     latest_timestamp = 0.0
     for file_path in (
@@ -181,6 +191,8 @@ def load_dashboard_snapshot(processed_dir: Path | str = "data/processed") -> Das
         backtest_summary_path,
         backtest_events_path,
         validation_events_path,
+        strategy_performance_path,
+        strategy_status_path,
     ):
         if file_path.exists():
             latest_timestamp = max(latest_timestamp, file_path.stat().st_mtime)
